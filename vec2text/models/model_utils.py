@@ -260,7 +260,7 @@ def load_embedder_and_tokenizer(name: str, torch_dtype: str, **kwargs):
             emb_dim = 768
             from transformers import BertTokenizer
             tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
-            embedding_mat = torch.load(f'random_embeddings_{emb_dim}.pt')
+            embedding_mat = torch.load(f'random_embeddings_{emb_dim}.pt').to(device)
 
             class RandomEmbWrapper(torch.nn.Module):
                 def __init__(self, embedding_mat):
@@ -269,7 +269,7 @@ def load_embedder_and_tokenizer(name: str, torch_dtype: str, **kwargs):
 
                 def forward(self, inputs):
                     embs = self.embedding_mat[inputs['input_ids']].mean(dim=1)  # average over tokens within each sequence (pooling)
-                    embs = torch.nn.functional.normalize(embs, dim=-1)
+                    embs = torch.nn.functional.normalize(embs, dim=-1)  # normalize
                     return {'sentence_embedding': embs}  # imitates SeT's API
 
                 def get_sentence_embedding_dimension(self):
@@ -292,7 +292,6 @@ def load_embedder_and_tokenizer(name: str, torch_dtype: str, **kwargs):
                 self.model = model
 
             def forward(self, x):
-                print(x)
                 x = self.model(x['sentence_embedding'])
                 return {'sentence_embedding': x}
 
@@ -300,7 +299,7 @@ def load_embedder_and_tokenizer(name: str, torch_dtype: str, **kwargs):
         aligner_model.eval()
         aligner_model.cuda()
 
-        # add module to SeT (which inherits from nn.Sequential
+        # add module to SeT (which inherits from nn.Sequential)
         if aligner_mode == 'aligner':
             model.append(aligner_model)
 
@@ -316,7 +315,7 @@ def load_embedder_and_tokenizer(name: str, torch_dtype: str, **kwargs):
 
 
 def load_encoder_decoder(
-    model_name: str, lora: bool = False
+        model_name: str, lora: bool = False
 ) -> transformers.AutoModelForSeq2SeqLM:
     model_kwargs: Dict[str, Any] = {
         "low_cpu_mem_usage": True,
