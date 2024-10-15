@@ -1,5 +1,6 @@
 import os
 from typing import Any, Dict
+import json
 
 import torch
 import torch.nn as nn
@@ -245,6 +246,66 @@ def load_embedder_and_tokenizer(name: str, torch_dtype: str, **kwargs):
             "nomic-ai/nomic-embed-text-v1", trust_remote_code=True
         )
         tokenizer = model.tokenizer
+    ############################################################
+    elif name.startswith("CUSTOM-EMBEDDER___"):
+        # The following should be added to `model_utils.py -> load_embedder_and_tokenizer()`,
+        # under `elif name.startswith("CUSTOM-EMBEDDER___"):`
+        _, trained_aligner_dir, aligner_mode = name.split("___")
+        with open(os.path.join(trained_aligner_dir, "metadata.json"), "r") as f:
+            metadata = json.load(f)
+        emb_model_name = metadata['dataset_metadata']['source_emb_model_name']
+
+        # Load the embedding model (to invert)
+        if emb_model_name == 'random_embeddings':
+            emb_dim = 768
+            from transformers import BertTokenizer
+            tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
+            embedding_mat = torch.load(f'random_embeddings_{emb_dim}.pt')
+
+            class RandomEmbWrapper(torch.nn.Module):
+                def __init__(self, embedding_mat):
+                    super().__init__()
+                    self.embedding_mat = embedding_mat
+
+                def forward(self, inputs):
+                    embs = self.embedding_mat[inputs['input_ids']].mean(dim=1)  # average over tokens within each sequence (pooling)
+                    embs = torch.nn.functional.normalize(embs, dim=-1)
+                    return {'sentence_embedding': embs}  # imitates SeT's API
+
+                def get_sentence_embedding_dimension(self):
+                    return self.embedding_mat.size(1)
+
+            model = SentenceTransformer(modules=[RandomEmbWrapper(embedding_mat)], device=device)
+        else:
+            model = SentenceTransformer(emb_model_name, device=device)
+            tokenizer = model.tokenizer
+
+        # Load trained aligner:
+        from .aligner_models import initialize_aligner_model
+        aligner_model = initialize_aligner_model(**metadata['model_kwargs'])
+        aligner_model.load_state_dict(torch.load(os.path.join(trained_aligner_dir, "best_model.pt"),
+                                                 map_location=torch.device('cuda')))
+
+        class SeTWrapper(torch.nn.Module):
+            def __init__(self, model):
+                super().__init__()
+                self.model = model
+
+            def forward(self, x):
+                print(x)
+                x = self.model(x['sentence_embedding'])
+                return {'sentence_embedding': x}
+
+        aligner_model = SeTWrapper(aligner_model)
+        aligner_model.eval()
+        aligner_model.cuda()
+
+        # add module to SeT (which inherits from nn.Sequential
+        if aligner_mode == 'aligner':
+            model.append(aligner_model)
+
+        # TODO add normalize?
+    #######################################
     else:
         print(f"WARNING: Trying to initialize from unknown embedder {name}")
         model = transformers.AutoModel.from_pretrained(name, **model_kwargs)
